@@ -1,0 +1,636 @@
+== Overview ==
+
+Bot scripting in Dota is done via lua scripting.  This is done at the server level, so there's no need to do things like examine screen pixels or simulate mouse clicks; instead scripts can query the game state and issue orders directly to units.  Scripts have full access to all the entity locations, cooldowns, mana values, etc that a player on that team would expect to.  The API is restricted such that scripts can't cheat -- units in FoW can't be queried, commands can't be issued to units the script doesn't control, etc.
+
+There is a [http://dev.dota2.com/forumdisplay.php?f=497 dev subforum] for bot scripting now.
+
+In addition to lua scripting, the underlying C++ bot code still exists, and scripts can decide how much or little of the underlying bot structure to use.
+
+Bots are organized into three levels of evaluation and decisionmaking:
+
+==== Team Level ====
+This is code that determines how much the overall team wants to push each lane, defend each lane, farm each lane, or kill Roshan.  These desires exist independent of the state of any of the bots.  They are not authoritative; that is, they do not dictate any actions taken by any of the bots.  They are instead just desires that the bots can use for decisionmaking.
+
+==== Mode Level ====
+Modes are the high-level desires that individual bots are constantly evaluating, with the highest-scoring mode being their currently active mode.  Examples of modes are laning, trying to kill a unit, farming, retreating, and pushing a tower.  
+
+==== Action Level ====
+Actions are the individual things that bots are actively doing on a moment-to-moment basis.  These loosely correspond to mouse clicks or button presses -- things like moving to a location, or attacking a unit, or using an ability, or purchasing an item.
+
+The overall flow is that the team level is providing top-level guidance on the current strategy of the team.  Each bot is then evaluating their desire score for each of its modes, which are taking into account both the team-level desires as well as bot-level desires.  The highest scoring mode becomes the active mode, which is solely responsible for issuing actions for the bot to perform.
+
+== Directory Structure ==
+
+All in-development bot scripts  live in the game/dota/scripts/vscripts/bots directory within your Dota 2 install.  When you upload your bot script to the workshop, it will upload the contents of this directory.  Downloaded scripts live in their own location within your Steam install.
+
+The bot scripting API is structured such that there are multiple elements that can be independently implemented by bot scripts.  What logic is overriden is determined by which functions you implement and the files in which they are implemented.  
+
+Each of the following scripting elements has its own script scope. 
+
+==== Complete takeover  ====
+If you'd like to completely take over control of a hero, you can implement a Think() function in a file called bot_generic.lua, which is called every frame in lieu of the normal bot thinking code.  This will completely take over all bots -- no team-level or mode-level thinking will happen.  You will be responsible for issuing all action-level commands to all bots.  If you'd like to just take over a specific hero's bot, for example Lina, you can implement a Think() function in a file called bot_lina.lua.
+
+Bots that have been completely taken over still respect the difficulty modifiers (see Appendix B), and still calculate their estimated damage.
+
+==== Mode Override ====
+If you'd like to work within the existing mode architecture but override the logic for mode desire and behavior, for example the Laning mode, you can implement the following functions in a mode_laning_generic.lua file:
+
+* GetDesire() - Called every frame, and needs to return a floating-point value between 0 and 1 that indicates how much this mode wants to be the active mode.
+* OnStart() - Called when a mode takes control as the active mode.
+* OnEnd() - Called when a mode relinquishes control to another active mode.
+* Think() - Called every frame while this is the active mode.  Responsible for issuing actions for the bot to take.
+
+You can additionally just override the mode logic for a specific hero, such as Lina, with a mode_laning_lina.lua file.  Please see Appendix A for implementation details if you'd like to chain calls from a hero-specific mode override back to a generic mode override.
+
+The list of valid bot modes to override are:
+* laning
+* attack
+* roam
+* retreat
+* secret_shop
+* side_shop
+* rune
+* push_tower_top
+* push_tower_mid
+* push_tower_bot
+* defend_tower_top
+* defend_tower_mid
+* defend_tower_bottom
+* assemble
+* team_roam
+* farm
+* defend_ally
+* evasive_maneuvers
+* roshan
+* item
+* ward
+
+==== Ability and Item usage ====
+If you'd like to just override decisionmaking around ability and item usage, you can implement the following functions in an ability_item_usage_generic.lua file:
+
+* ItemUsageThink() - Called every frame.  Responsible for issuing item usage actions.
+* AbilityUsageThink() - Called every frame.  Responsible for issuing ability usage actions.
+* CourierUsageThink() - Called every frame.  Responsible for issuing commands to the courier.
+* BuybackUsageThink() - Called every frame.  Responsible for issuing a command to buyback.
+
+If any of these functions are not implemented, it will fall back to the default C++ implementation.  
+
+You can additionally just override the ability/item usage logic for a single hero, such as Lina, with an ability_item_usage_lina.lua file.  Please see Appendix A for implementation details if you'd like to chain calls from a hero-specific item/ability implementation back to a generic item/ability implementation.
+
+==== Item Purchasing ====
+If you'd like to just override decisionmaking around item purchasing, you can implement the following function in an item_purchase_generic.lua file:
+
+* ItemPurchaseThink() - Called every frame.  Responsible for purchasing items.
+
+You can additionally just override the item purchasing logic for a single hero, such as Lina, with an item_purchase_lina.lua file.
+
+==== Team Level Desires ====
+If you'd like to supply team-level desires, you can implement the following functions in a team_desires.lua file:
+
+* UpdatePushLaneDesires() - Called every frame.  Returns floating point values between 0 and 1 that represent the desires for pushing the top, middle, and bottom lanes, respectively.
+* UpdateDefendLaneDesires() - Called every frame.  Returns floating point values between 0 and 1 that represent the desires for defending the top, middle, and bottom lanes, respectively.
+* UpdateFarmLaneDesires() - Called every frame.  Returns floating point values between 0 and 1 that represent the desires for farming the top, middle, and bottom lanes, respectively.
+* UpdateRoamDesire() - Called every frame.  Returns a floating point value between 0 and 1 and a unit handle that represents the desire for someone to roam and gank a specified target.
+* UpdateRoshanDesire() - Called every frame.  Returns a floating point value between 0 and 1 that represents the desire for the team to kill Roshan.
+
+If any of these functions are not implemented, it will fall back to the default C++ implementation.
+
+==== Hero Selection ====
+If you'd like to handle hero picking and lane assignment, you can  implement the following functions in a hero_selection.lua file:
+
+* Think() - Called every frame.  Responsible for selecting heroes for bots.
+* UpdateLaneAssignments() - Called every frame prior to the game starting.  Returns ten PlayerID-Lane pairs.
+
+== API Reference ==
+
+There are two basic levels at which the API is available: globally, and on individual units.  The following is a list of functions available at each level.
+
+==== Global ====
+
+(details WIP)
+
+* GetBot
+* GetTeam
+* GetTeamMember
+
+* DotaTime
+* GameTime
+* RealTime
+
+* GetUnitToUnitDistance
+* GetUnitToLocationDistance
+* GetWorldBounds
+* IsLocationPassable
+* GetHeightLevel
+* GetLocationAlongLane
+* GetNeutralSpawners
+* GetItemCost
+* IsItemPurchasedFromSecretShop
+* IsItemPurchasedFromSideShop
+* GetItemStockCount
+
+* GetPushLaneDesire
+* GetDefendLaneDesire
+* GetFarmLaneDesire
+* GetRoamDesire
+* GetRoamTarget
+* GetRoshanDesire
+
+* int GetGameState()
+* -Returns the current game state [LINK HERE]
+
+* float GetGameStateTimeRemaining()
+* -Returns how much time is remaining in the curren game state, if applicable
+
+* int GetGameMode()
+* -Returns the current game mode [LINK HERE]
+
+* int GetHeroPickState()
+* -Returns the current hero pick state [LINK HERE]
+
+* IsPlayerInHeroSelectionControl
+* SelectHero
+* GetSelectedHeroName
+
+* IsInCMBanPhase
+* IsInCMPickPhase
+* GetCMPhaseTimeRemaining
+* GetCMCaptain
+* SetCMCaptain
+* IsCMBannedHero
+* IsCMPickedHero
+* CMBanHero
+* CMPickHero
+
+* RandomInt
+* RandomFloat
+* RandomYawVector
+* RollPercentage
+* Min
+* Max
+* Clamp
+* RemapVal
+* RemapValClamped
+
+* DebugDrawLine
+* DebugDrawCircle
+* DebugDrawText
+
+==== Unit-Scoped ====
+* Action_ClearActions
+* Action_MoveToLocation
+* Action_MoveToUnit
+* Action_AttackUnit
+* Action_AttackMove
+* Action_UseAbility
+* Action_UseAbilityOnEntity
+* Action_UseAbilityOnLocation
+* Action_UseAbilityOnTree
+* Action_PickUpRune
+* Action_PickUpItem
+* Action_DropItem
+* Action_PurchaseItem
+* Action_SellItem
+* Action_Buyback
+* Action_LevelAbility
+
+* GetDifficulty
+* GetUnitName
+* GetPlayer
+* IsHero
+* IsCreep
+* IsTower
+* IsBuilding
+* IsFort
+* IsIllusion
+
+* CanBeSeen
+* GetActiveMode
+* GetActiveModeDesire
+* GetHealth
+* GetMaxHealth           
+* GetMana
+* GetMaxMana
+* IsAlive
+* GetRespawnTime
+* HasBuyback
+* GetGold
+* GetStashValue
+* GetCourierValue
+* GetLocation
+* GetFacing
+* GetGroundHeight
+* GetAbilityByName
+* GetItemInSlot
+* IsChanneling
+* IsUsingAbility
+* GetVelocity
+* GetAttackTarget
+* GetLastSeenLocation
+* GetTimeSinceLastSeen
+
+* IsRooted
+* IsDisarmed
+* IsAttackImmune
+* IsSilenced
+* IsMuted
+* IsStunned
+* IsHexed
+* IsInvulnerable
+* IsMagicImmune
+* IsNightmared
+* IsBlockDisabled
+* IsEvadeDisabled
+* IsUnableToMiss
+* IsSpeciallyDeniable
+* IsDominated
+* IsBlind
+* HasScepter
+
+* WasRecentlyDamagedByAnyHero
+* WasRecentlyDamagedByHero
+* TimeSinceDamagedByAnyHero
+* TimeSinceDamagedByHero
+
+* DistanceFromFountain
+* DistanceFromSideShop
+* DistanceFromSecretShop
+
+* SetTarget
+* GetTarget
+
+* SetNextItemPurchaseValue
+* GetNextItemPurchaseValue
+
+* GetAssignedLane
+
+* GetEstimatedDamageToTarget
+* GetStunDuration
+* GetSlowDuration
+* HasBlink
+* HasMinistunOnAttack
+* HasSilence
+* HasInvisibility
+* UsingItemBreaksInvisibility
+
+* GetNearbyHeroes
+* GetNearbyTowers
+* GetNearbyCreeps
+
+* FindAoELocation
+
+* GetExtrapolatedLocation
+* GetMovementDirectionStability
+
+* GetActualDamage
+
+== Bot Difficulties ==
+
+There are five bot difficulties:
+
+==== Passive ====
+* Cannot use abilities or items or the courier.
+* Will always remain in laning mode.
+* When attempting to last hit creeps, their estimation of the best time to land the attack randomly varies by 0.4 seconds.
+* When attempting to last hit allied creeps, their estimation of the best time to land the attack randomly varies by 0.2 seconds.
+
+==== Easy ====
+* Ability and item usage gets a random delay of 0.5 to 1.0 seconds
+* Every 8 seconds, ability and item usage is disallowed for 6 seconds.
+* Whenever an ability or item is used, ability and item usage is disallowed for 6 seconds.
+* When attempting to last hit enemy creeps, their estimation of the best time to land the attack randomly varies by 0.4 seconds.
+* When attempting to last hit allied creeps, their estimation of the best time to land the attack randomly varies by 0.2 seconds.
+
+==== Medium ====
+* Ability and item usage gets a random delay of 0.3 to 0.6 seconds
+* Every 10 seconds, ability and item usage is disallowed for 3 seconds.
+* Whenever an ability or item is used, ability and item usage is disallowed for 3 seconds.
+* When attempting to last hit creeps, their estimation of the best time to land the attack randomly varies by 0.2 seconds.
+* When attempting to last hit allied creeps, their estimation of the best time to land the attack randomly varies by 0.1 seconds.
+
+==== Hard ====
+* Ability and item usage gets a random delay of 0.1 to 0.2 seconds.
+
+==== Unfair ====
+* Ability and item usage gets a random delay of 0.075 to 0.15 seconds.
+* XP and Gold earned gets a 25% bonus.
+
+== Debugging == 
+There are a number of commands that help you debug what's happening with bots.
+
+<br />
+''dota_bot_debug_team''
+Brings up a panel for the specified team (2 is Radiant, 3 is Dire) that displays:
+* Team-level desires for pushing/defending/farming lanes, and Roshan.
+* Bot names and levels
+* Bot current and maximum "power" levels (see Appendex D for how power levels are calculated).  Can be disabled with "dota_bot_debug_team_power 0".
+* Active modes, and those mode desires.
+* All modes for a bot ( individually collapsable), and each of those modes' desires.
+* Current bot action along with that action's target if applicable.
+* Total bot execution time for the overall team calculations, and each individual bot.
+
+It additionally enables the line-sphere rendering of dota_bot_select_debug for all bots on the specified team.
+
+<br />
+''dota_bot_debug_grid''<br />
+''dota_bot_debug_grid_cycle''<br />
+''dota_bot_debug_minimap''<br />
+''dota_bot_debug_minimap_cycle''<br />
+
+Causes a grid to draw on the world or the minimap.  The *_cycle variants just cycle through all the values, whereas the other commands just set the mode directly.
+* 0 - Off
+* 1 - Radiant avoidance
+* 2 - Dire avoidance
+* 3 - Potential enemy locations for the Radiant
+* 4 - Potential enemy locations for the Dire
+* 5 - Enemy visibility to the Radiant
+* 6 - Enemy visibility to the Dire
+* 7 - Height Values
+* 8 - Passability
+
+<br />
+''dota_bot_select_debug''
+
+Activates the following displays on the under-the-cursor bot:
+* The current mode and action of the selected bot.  
+* A white line-sphere list to it current pathfind.
+* A blue line-sphere to its current laning last-hit target.
+* A red line-sphere to its current attack target.
+
+<br />
+''dota_bot_select_debug_attack''
+
+Displays how much the under-the-cursor bot wants to attack any nearby enemies.
+
+<br />
+''dota_bot_debug_clear''
+
+Clears the dota_bot_select_debug and dota_bot_select_debug_attack states of the under-the-cursor bot.
+
+<br />
+''dota_bot_debug_lanes''
+
+Shows the path of all of the lanes, along with a sphere at the "lane front".
+
+<br />
+''dota_bot_debug_ward_locations''
+
+Shows small yellow spheres at each of ward locations the bots will consider.
+
+== Potential Locations ==
+
+One of the utility functions available to bot scripts is GetUnitPotentialValue(), which returns a value between 0 and 255 that represents an estimation of how likely it is that a hero is within the specified radius of the specified location.  This value is based the potential location grid that is updated during bot games.  
+<br /><br />
+It works like this:  
+* When a team loses visibility of that hero, there's a floodfill that starts through the passable areas of the map, moving at the movement speed of that missing hero.  
+* The intensity of the "potential location" starts out high, and then decreases as the potential location becomes larger and more diffuse.  
+* This floodfill happens for each enemy hero independently.
+<br /><br />
+This does have some limitations:
+* It doesn't take into account heroes that teleport or otherwise have speed/movement bursts (Lycan's wolf form, AM's blinking, etc)
+* It doesn't include any logic about why a hero is missing or where they've gone -- it assumes an equal chance of a hero moving in any direction under FoW
+<br /><br />
+Still, it can be useful for some decisionmaking, especially when the potential location values are high.  You obviously don't want to stop considering a hero nearby the moment you lose sight of them, so using the potential location grid to help evaluate how dangerous a location is can be helpful.
+
+== Hero Power ==
+It's often useful to understand how powerful a teammate bot is, or how dangerous an enemy is.  One rough estimate is the Hero Power concept, which is updated for each hero each frame.
+<br /><br />
+Here is how it's calculated (done per-hero):
+* For each enemy hero, calculate the amount of damage done over a time interval to that enemy hero.
+* That time interval is defined as 5 seconds, plus the duration that the hero can stun a unit, plus half the duration that the hero can slow a unit.
+* That damage includes both attacking for that duration, plus damage done by abilities.
+* Attack damage includes procs as well as debuffs.
+* Ability damage is based on available mana, cast time, cooldowns, silence status, etc.
+* That damage is then averaged over all enemy heroes.
+<br />
+Additionally, we calculate each hero's Raw Power as well, which ignores all cooldowns and hero state (mana, debuffs, etc).  It's more a representation of how powerful a hero theoretically is than how powerful they are at any given moment.
+<br /><br />
+Note that this is an indicator of offensive power only, not tankiness or durability.
+<br /><br />
+GetRawOffensivePower() can be called on teammates or enemies that you can see.
+GetOffensivePower() can be called only on teammates.
+
+== Appendix A - Chaining to a generic implementation in Lua ==
+
+If you're implementing a generic version of a mode or ability/item usage, you should add this code to the top of your generic file (adjusting the name of the module appropriately):
+
+{| class="wikitable"
+|-
+| _G._savedEnv = getfenv()
+module( "mode_generic_defend_ally", package.seeall )
+|}
+and the following code to the end of your file:
+
+{| class="wikitable"
+|-
+| for k,v in pairs( mode_generic_defend_ally ) do        _G._savedEnv[k] = v end
+|}
+
+Then in your hero-specific implementation, you can start your file with this:
+
+{| class="wikitable"
+|-
+| require( GetScriptDirectory().."/mode_defend_ally_generic" )
+|}
+
+which allows you to do things like the following in your bot-specific code:
+
+{| class="wikitable"
+|-
+| mode_generic_defend_ally.OnStart();
+|}
+
+== Appendix B - List of available constants == 
+
+=== Bot Modes === 
+
+* BOT_MODE_NONE
+* BOT_MODE_LANING
+* BOT_MODE_ATTACK
+* BOT_MODE_ROAM
+* BOT_MODE_RETREAT
+* BOT_MODE_SECRET_SHOP
+* BOT_MODE_SIDE_SHOP
+* BOT_MODE_PUSH_TOWER_TOP
+* BOT_MODE_PUSH_TOWER_MID
+* BOT_MODE_PUSH_TOWER_BOT
+* BOT_MODE_DEFEND_TOWER_TOP
+* BOT_MODE_DEFEND_TOWER_MID
+* BOT_MODE_DEFEND_TOWER_BOT
+* BOT_MODE_ASSEMBLE
+* BOT_MODE_TEAM_ROAM
+* BOT_MODE_FARM
+* BOT_MODE_DEFEND_ALLY
+* BOT_MODE_EVASIVE_MANEUVERS
+* BOT_MODE_ROSHAN
+* BOT_MODE_ITEM
+* BOT_MODE_WARD
+
+=== Action Desires ===
+
+These can be useful for making sure all action desires are using a common language for talking about their desire.
+
+* BOT_ACTION_DESIRE_NONE - 0.0
+* BOT_ACTION_DESIRE_VERYLOW - 0.1
+* BOT_ACTION_DESIRE_LOW - 0.25
+* BOT_ACTION_DESIRE_MODERATE - 0.5
+* BOT_ACTION_DESIRE_HIGH - 0.75
+* BOT_ACTION_DESIRE_VERYHIGH - 0.9
+* BOT_ACTION_DESIRE_ABSOLUTE - 1.0
+
+=== Mode Desires ===
+
+These can be useful for making sure all mode desires as using a common language for talking about their desire.
+
+* BOT_MODE_DESIRE_NONE" - 0
+* BOT_MODE_DESIRE_VERYLOW - 0.1
+* BOT_MODE_DESIRE_LOW - 0.25
+* BOT_MODE_DESIRE_MODERATE - 0.5
+* BOT_MODE_DESIRE_HIGH - 0.75
+* BOT_MODE_DESIRE_VERYHIGH - 0.9
+* BOT_MODE_DESIRE_ABSOLUTE - 1.0
+
+=== Damage Types === 
+
+* DAMAGE_TYPE_PHYSICAL
+* DAMAGE_TYPE_MAGICAL
+* DAMAGE_TYPE_PURE
+* DAMAGE_TYPE_ALL
+
+=== Difficulties ===
+
+* DIFFICULTY_INVALID
+* DIFFICULTY_PASSIVE
+* DIFFICULTY_EASY
+* DIFFICULTY_MEDIUM
+* DIFFICULTY_HARD
+* DIFFICULTY_UNFAIR
+
+=== Item Purchase Results === 
+
+* PURCHASE_ITEM_SUCCESS
+* PURCHASE_ITEM_OUT_OF_STOCK
+* PURCHASE_ITEM_DISALLOWED_ITEM
+* PURCHASE_ITEM_INSUFFICIENT_GOLD
+* PURCHASE_ITEM_NOT_AT_HOME_SHOP
+* PURCHASE_ITEM_NOT_AT_SIDE_SHOP
+* PURCHASE_ITEM_NOT_AT_SECRET_SHOP
+* PURCHASE_ITEM_INVALID_ITEM_NAME
+
+=== Game Modes === 
+
+* GAMEMODE_NONE
+* GAMEMODE_AP
+* GAMEMODE_CM
+* GAMEMODE_RD
+* GAMEMODE_SD
+* GAMEMODE_AR
+* GAMEMODE_REVERSE_CM
+* GAMEMODE_MO
+* GAMEMODE_CD
+* GAMEMODE_ABILITY_DRAFT
+* GAMEMODE_ARDM
+* GAMEMODE_1V1MID
+* GAMEMODE_ALL_DRAFT  (aka Ranked All Pick)
+
+=== Teams ===
+
+* TEAM_RADIANT
+* TEAM_DIRE"
+* TEAM_NEUTRAL
+* TEAM_NONE
+
+=== Lanes === 
+
+* LANE_NONE
+* LANE_TOP
+* LANE_MID
+* LANE_BOT
+
+=== Game States === 
+
+* GAME_STATE_INIT
+* GAME_STATE_WAIT_FOR_PLAYERS_TO_LOAD
+* GAME_STATE_HERO_SELECTION
+* GAME_STATE_STRATEGY_TIME
+* GAME_STATE_PRE_GAME
+* GAME_STATE_GAME_IN_PROGRESS
+* GAME_STATE_POST_GAME
+* GAME_STATE_DISCONNECT
+* GAME_STATE_TEAM_SHOWCASE
+* GAME_STATE_CUSTOM_GAME_SETUP
+* GAME_STATE_WAIT_FOR_MAP_TO_LOAD
+* GAME_STATE_LAST
+
+=== Hero Pick States === 
+
+* HEROPICK_STATE_NONE
+* HEROPICK_STATE_AP_SELECT
+* HEROPICK_STATE_SD_SELECT
+* HEROPICK_STATE_CM_INTRO
+* HEROPICK_STATE_CM_CAPTAINPICK
+* HEROPICK_STATE_CM_BAN1
+* HEROPICK_STATE_CM_BAN2
+* HEROPICK_STATE_CM_BAN3
+* HEROPICK_STATE_CM_BAN4
+* HEROPICK_STATE_CM_BAN5
+* HEROPICK_STATE_CM_BAN6
+* HEROPICK_STATE_CM_BAN7
+* HEROPICK_STATE_CM_BAN8
+* HEROPICK_STATE_CM_BAN9
+* HEROPICK_STATE_CM_BAN10
+* HEROPICK_STATE_CM_SELECT1
+* HEROPICK_STATE_CM_SELECT2
+* HEROPICK_STATE_CM_SELECT3
+* HEROPICK_STATE_CM_SELECT4
+* HEROPICK_STATE_CM_SELECT5
+* HEROPICK_STATE_CM_SELECT6
+* HEROPICK_STATE_CM_SELECT7
+* HEROPICK_STATE_CM_SELECT8
+* HEROPICK_STATE_CM_SELECT9
+* HEROPICK_STATE_CM_SELECT10
+* HEROPICK_STATE_CM_PICK
+* HEROPICK_STATE_AR_SELECT
+* HEROPICK_STATE_MO_SELECT
+* HEROPICK_STATE_FH_SELECT
+* HEROPICK_STATE_CD_INTRO
+* HEROPICK_STATE_CD_CAPTAINPICK
+* HEROPICK_STATE_CD_BAN1
+* HEROPICK_STATE_CD_BAN2
+* HEROPICK_STATE_CD_BAN3
+* HEROPICK_STATE_CD_BAN4
+* HEROPICK_STATE_CD_BAN5
+* HEROPICK_STATE_CD_BAN6
+* HEROPICK_STATE_CD_SELECT1
+* HEROPICK_STATE_CD_SELECT2
+* HEROPICK_STATE_CD_SELECT3
+* HEROPICK_STATE_CD_SELECT4
+* HEROPICK_STATE_CD_SELECT5
+* HEROPICK_STATE_CD_SELECT6
+* HEROPICK_STATE_CD_SELECT7
+* HEROPICK_STATE_CD_SELECT8
+* HEROPICK_STATE_CD_SELECT9
+* HEROPICK_STATE_CD_SELECT10
+* HEROPICK_STATE_CD_PICK
+* HEROPICK_STATE_BD_SELECT
+* HERO_PICK_STATE_ABILITY_DRAFT_SELECT
+* HERO_PICK_STATE_ARDM_SELECT
+* HEROPICK_STATE_ALL_DRAFT_SELECT
+* HERO_PICK_STATE_CUSTOMGAME_SELECT
+* HEROPICK_STATE_SELECT_PENALTY
+
+=== Runes ===
+
+* RUNE_DOUBLEDAMAGE
+* RUNE_HASTE
+* RUNE_ILLUSION
+* RUNE_INVISIBILITY
+* RUNE_REGENERATION
+* RUNE_BOUNTY
+* RUNE_ARCANE
+
+=== Rune Status ===
+
+* RUNE_STATUS_UNKNOWN
+* RUNE_STATUS_AVAILABLE
+* RUNE_STATUS_MISSING
